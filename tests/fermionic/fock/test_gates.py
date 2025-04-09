@@ -169,3 +169,137 @@ def test_Interferometer_nonconsecutive_ordering_raises_InvalidParameter(connecto
         simulator.execute(preparation)
 
     assert error.value.args[0] == "Specified modes must be consecutive: modes=(0, 2, 1)"
+
+
+@for_all_connectors
+def test_Squeezing2_on_two_modes(connector):
+    d = 2
+
+    r = 0.1
+    phi = np.pi / 7
+
+    with pq.Program() as program:
+        pq.Q() | pq.StateVector([1, 1])
+
+        pq.Q(0, 1) | pq.Squeezing2(r=r, phi=phi)
+
+    simulator = pq.fermionic.PureFockSimulator(
+        d=d, config=pq.Config(cutoff=d + 1), connector=connector
+    )
+
+    state = simulator.execute(program).state
+
+    term_00 = np.sin(r / 2) * np.exp(-1j * phi)
+    term_11 = np.cos(r / 2)
+
+    expected_state_vector = np.array([term_00, 0.0, 0.0, term_11])
+
+    assert np.allclose(state.state_vector, expected_state_vector)
+
+
+@for_all_connectors
+def test_Squeezing2_nonconsecutive_ordering_raises_InvalidParameter(connector):
+    d = 3
+
+    r = 0.1
+    phi = np.pi / 7
+
+    with pq.Program() as program:
+        pq.Q() | pq.StateVector([1, 0, 1])
+
+        pq.Q(0, 2) | pq.Squeezing2(r=r, phi=phi)
+
+    simulator = pq.fermionic.PureFockSimulator(
+        d=d, config=pq.Config(cutoff=d + 1), connector=connector
+    )
+
+    with pytest.raises(pq.api.exceptions.InvalidParameter) as error:
+        simulator.execute(program)
+
+    assert error.value.args[0] == "Specified modes must be consecutive: modes=(0, 2)"
+
+
+@for_all_connectors
+def test_Squeezing2_cutoff(connector):
+    d = 3
+
+    r = 0.1
+    phi = np.pi / 7
+
+    cutoff = 2
+
+    with pq.Program() as program:
+        pq.Q() | pq.StateVector([0, 0, 0])
+
+        pq.Q(0, 1) | pq.Squeezing2(r=r, phi=phi)
+
+    simulator = pq.fermionic.PureFockSimulator(
+        d=d, config=pq.Config(cutoff=cutoff), connector=connector
+    )
+
+    state = simulator.execute(program).state
+
+    expected_state_vector = np.array([np.cos(r / 2), 0.0, 0.0, 0.0])
+
+    assert np.allclose(state.state_vector, expected_state_vector)
+
+
+@for_all_connectors
+def test_ControlledPhase(connector):
+    d = 2
+    r = 0.1
+
+    phi = np.pi / 7
+    cp_phi = np.pi / 5
+
+    with pq.Program() as program:
+        pq.Q() | pq.StateVector([1, 1])
+
+        pq.Q(0, 1) | pq.Squeezing2(r=r, phi=phi)
+
+        pq.Q(0, 1) | pq.fermionic.ControlledPhase(phi=cp_phi)
+
+    simulator = pq.fermionic.PureFockSimulator(
+        d=d, config=pq.Config(cutoff=d + 1), connector=connector
+    )
+
+    state = simulator.execute(program).state
+
+    term_00 = np.sin(r / 2) * np.exp(-1j * phi)
+    term_11 = np.cos(r / 2) * np.exp(1j * cp_phi)
+
+    expected_state_vector = np.array([term_00, 0.0, 0.0, term_11])
+
+    assert np.allclose(state.state_vector, expected_state_vector)
+
+
+@for_all_connectors
+def test_IsingXX(connector):
+    d = 2
+
+    phi = np.pi / 7
+    a = np.sqrt(3 / 4)
+    b = np.sqrt(1 / 4)
+
+    with pq.Program() as program:
+        pq.Q() | pq.StateVector([0, 0]) * a
+        pq.Q() | pq.StateVector([0, 1]) * b
+
+        pq.Q(0, 1) | pq.fermionic.IsingXX(phi=phi)
+
+    simulator = pq.fermionic.PureFockSimulator(
+        d=d, config=pq.Config(cutoff=d + 1), connector=connector
+    )
+
+    state = simulator.execute(program).state
+
+    expected_state_vector = np.array(
+        [
+            a * np.cos(phi),
+            b * 1j * np.sin(phi),
+            b * np.cos(phi),
+            a * 1j * np.sin(phi),
+        ]
+    )
+
+    assert np.allclose(state.state_vector, expected_state_vector)

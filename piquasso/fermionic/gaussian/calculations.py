@@ -18,15 +18,24 @@ from piquasso.api.result import Result
 from piquasso.api.exceptions import InvalidParameter
 from piquasso.api.instruction import Instruction
 
-from piquasso.instructions.gates import _PassiveLinearGate
+from piquasso.instructions.gates import _PassiveLinearGate, Squeezing2
+from piquasso.fermionic.instructions import IsingXX
 
 from piquasso._math.validations import all_zero_or_one
 from piquasso._math.transformations import (
     xxpp_to_xpxp_indices,
 )
 
+from piquasso._math.indices import double_modes
+
 from .._utils import validate_fermionic_gaussian_hamiltonian
 from .state import GaussianState
+
+import typing
+
+if typing.TYPE_CHECKING:
+    import numpy as np
+    from typing import Tuple
 
 
 def vacuum(state: GaussianState, instruction: Instruction, shots: int) -> Result:
@@ -75,34 +84,90 @@ def parent_hamiltonian(
 def gaussian_hamiltonian(
     state: GaussianState, instruction: Instruction, shots: int
 ) -> Result:
-    H = instruction.params["hamiltonian"]
+    hamiltonian = instruction.params["hamiltonian"]
+    modes = instruction.modes
 
-    validate_fermionic_gaussian_hamiltonian(H)
+    validate_fermionic_gaussian_hamiltonian(hamiltonian)
+    h = _transform_to_majorana_basis(hamiltonian, state._connector)
 
-    np = state._connector.np
-    fallback_np = state._connector.fallback_np
+    evolved_state = _do_apply_gaussian_hamiltonian(state, h, modes)
 
-    d = state.d
+    return Result(state=evolved_state)
 
-    A = H[d:, d:]
-    B = H[:d, d:]
+
+def _transform_to_majorana_basis(H, connector):
+    r"""Transform quadratic gate Hamiltonian to Majorana basis.
+
+    Consider a gate unitary of the form
+
+    .. math::
+        U = e^{i \hat{H}},
+
+    where
+
+    .. math::
+        \hat{H} &= \mathbf{f} H \mathbf{f}^\dagger, \\\\
+        H &= \begin{bmatrix}
+            A & -\overline{B} \\
+            B & -\overline{A}
+        \end{bmatrix}.
+
+    Changing to Majorana basis, one can rewrite this as
+
+    .. math::
+        \hat{H} &= i \sum_{j,k=1}^{2d} h_{jk} m_j m_k,
+
+    where :math:`m_j` denotes the Majorana operators
+
+    .. math::
+        m_{2k} &:= f_k + f_k^\dagger, \\\\
+        p_{2k+1} &:= -i (f_k - f_k^\dagger).
+
+    Returns:
+        np.ndarray: The matrix `h`.
+    """
+
+    np = connector.np
+    fallback_np = connector.fallback_np
+
+    small_d = len(H) // 2
+
+    A = H[small_d:, small_d:]
+    B = H[:small_d, small_d:]
 
     A_plus_B = A + B
     A_minus_B = A - B
-    indices = xxpp_to_xpxp_indices(d)
+    indices = xxpp_to_xpxp_indices(small_d)
 
-    h = np.block(
-        [
-            [A_plus_B.imag, A_plus_B.real],
-            [-A_minus_B.real, A_minus_B.imag],
-        ]
-    )[fallback_np.ix_(indices, indices)]
+    return (
+        np.block(
+            [
+                [A_plus_B.imag, A_plus_B.real],
+                [-A_minus_B.real, A_minus_B.imag],
+            ]
+        )[fallback_np.ix_(indices, indices)]
+        / 2
+    )
 
-    SO = state._connector.expm(-2 * h)
+
+def _do_apply_gaussian_hamiltonian(
+    state: GaussianState, h: "np.ndarray", modes: "Tuple[int, ...]"
+) -> GaussianState:
+    connector = state._connector
+    np = connector.np
+    fallback_np = connector.fallback_np
+
+    d = state._d
+
+    doubled_modes = double_modes(fallback_np.array(modes))
+
+    SO = connector.embed_in_identity(
+        connector.expm(-4 * h), np.ix_(doubled_modes, doubled_modes), 2 * d
+    )
 
     state.covariance_matrix = SO @ state.covariance_matrix @ SO.T
 
-    return Result(state=state)
+    return state
 
 
 def passive_linear_gate(
@@ -149,3 +214,54 @@ def passive_linear_gate(
     )
 
     return Result(state=state)
+
+
+def squeezing2(state: GaussianState, instruction: Squeezing2, shots: int) -> Result:
+    connector = state._connector
+    np = connector.np
+    complex_dtype = state._D.dtype
+
+    modes = instruction.modes
+    r = instruction.params["r"]
+    phi = instruction.params["phi"]
+
+    r_cos_phi = r * np.cos(phi)
+    r_sin_phi = r * np.sin(phi)
+
+    h_active = (
+        np.array(
+            [
+                [r_cos_phi, r_sin_phi],
+                [r_sin_phi, -r_cos_phi],
+            ],
+            dtype=complex_dtype,
+        )
+        / 8
+    )
+
+    zeros = np.zeros_like(h_active)
+
+    h = np.block([[zeros, h_active], [-h_active, zeros]])
+
+    evolved_state = _do_apply_gaussian_hamiltonian(state, h, modes)
+
+    return Result(state=evolved_state)
+
+
+def ising_XX(state: GaussianState, instruction: IsingXX, shots: int) -> Result:
+    phi = instruction.params["phi"]
+
+    connector = state._connector
+
+    np = connector.np
+
+    modes = instruction.modes
+
+    h = np.zeros((4, 4), dtype=state._config.dtype)
+
+    h = connector.assign(h, (1, 2), -phi / 2)
+    h = connector.assign(h, (2, 1), phi / 2)
+
+    evolved_state = _do_apply_gaussian_hamiltonian(state, h, modes)
+
+    return Result(state=evolved_state)

@@ -96,6 +96,45 @@ def test_passive_GaussianHamiltonian_preserves_particle_number(
     )
 
 
+@pytest.mark.monkey
+@for_all_connectors
+def test_GaussianHamiltonian_subsystem_equivalence(
+    connector,
+    generate_fermionic_gaussian_hamiltonian,
+):
+    d = 3
+
+    modes = (0, 2)
+
+    hamiltonian = generate_fermionic_gaussian_hamiltonian(d - 1)
+
+    embedded_hamiltonian = connector.np.zeros((2 * d, 2 * d), dtype=hamiltonian.dtype)
+
+    doubled_modes = np.concatenate([modes, np.array(modes) + d])
+
+    embedded_hamiltonian = connector.assign(
+        embedded_hamiltonian, np.ix_(doubled_modes, doubled_modes), hamiltonian
+    )
+
+    state_vector = [1, 0, 1]
+    simulator = pq.fermionic.GaussianSimulator(d=d, connector=connector)
+
+    with pq.Program() as program_subsystem:
+        pq.Q() | pq.StateVector(state_vector)
+
+        pq.Q(*modes) | pq.fermionic.GaussianHamiltonian(hamiltonian=hamiltonian)
+
+    with pq.Program() as program_embedded:
+        pq.Q() | pq.StateVector(state_vector)
+
+        pq.Q() | pq.fermionic.GaussianHamiltonian(hamiltonian=embedded_hamiltonian)
+
+    subsystem_state = simulator.execute(program_subsystem).state
+    embedded_state = simulator.execute(program_embedded).state
+
+    assert subsystem_state == embedded_state
+
+
 @for_all_connectors
 def test_Interferometer_on_state_vector(connector):
     passive_hamiltonian = np.array([[1, 2j, 3j], [-2j, 5, 6], [-3j, 6, 7]])
@@ -327,3 +366,92 @@ def test_Interferometer_subsystem_equivalence(connector, generate_unitary_matrix
     state_full = simulator.execute(program_full).state
 
     assert state_subsystem == state_full
+
+
+@for_all_connectors
+def test_Squeezing2_on_two_modes_00(connector):
+    d = 2
+
+    state_vector = [0, 0]
+
+    r = 0.1
+    phi = np.pi / 7
+
+    with pq.Program() as program:
+        pq.Q() | pq.StateVector(occupation_numbers=state_vector)
+
+        pq.Q(0, 1) | pq.Squeezing2(r=r, phi=phi)
+
+    simulator = pq.fermionic.GaussianSimulator(d=d, connector=connector)
+
+    state = simulator.execute(program).state
+
+    term_00 = np.cos(r / 2)
+    term_11 = -np.sin(r / 2) * np.exp(1j * phi)
+
+    expected_state_vector = np.array([term_00, 0.0, 0.0, term_11])
+
+    expected_density_matrix = np.outer(
+        expected_state_vector, expected_state_vector.conj()
+    )
+
+    actual_density_matrix = state.density_matrix
+
+    assert np.allclose(expected_density_matrix, actual_density_matrix)
+
+
+@for_all_connectors
+def test_Squeezing2_on_two_modes_11(connector):
+    d = 2
+
+    state_vector = [1, 1]
+
+    r = 0.1
+    phi = np.pi / 7
+
+    with pq.Program() as program:
+        pq.Q() | pq.StateVector(occupation_numbers=state_vector)
+
+        pq.Q(0, 1) | pq.Squeezing2(r=r, phi=phi)
+
+    simulator = pq.fermionic.GaussianSimulator(d=d, connector=connector)
+
+    state = simulator.execute(program).state
+
+    term_00 = np.sin(r / 2) * np.exp(-1j * phi)
+    term_11 = np.cos(r / 2)
+
+    expected_state_vector = np.array([term_00, 0.0, 0.0, term_11])
+
+    expected_density_matrix = np.outer(
+        expected_state_vector, expected_state_vector.conj()
+    )
+
+    actual_density_matrix = state.density_matrix
+
+    assert np.allclose(expected_density_matrix, actual_density_matrix)
+
+
+@for_all_connectors
+def test_Squeezing2_leaves_odd_occupation_numbers_invariant(connector):
+    d = 2
+
+    state_vector = [1, 0]
+
+    r = 0.1
+    phi = np.pi / 7
+
+    simulator = pq.fermionic.GaussianSimulator(d=d, connector=connector)
+
+    with pq.Program() as empty_program:
+        pq.Q() | pq.StateVector(occupation_numbers=state_vector)
+
+    with pq.Program() as program:
+        pq.Q() | empty_program
+
+        pq.Q(0, 1) | pq.Squeezing2(r=r, phi=phi)
+
+    initial_state = simulator.execute(empty_program).state
+    squeezed_state = simulator.execute(program).state
+
+    assert initial_state == squeezed_state
